@@ -9,8 +9,3 @@
   belongs to a separately described distribution. No code or trial executable
   from this repository has been incorporated or executed.
 
-The single-host MVP uses Python standard-library services and SQLite instead of
-the initially proposed Go/PostgreSQL stack. This keeps deployment small and
-testable while preserving the separate privileged agent boundary. PostgreSQL,
-multi-user OIDC, durable analytics, atomic policy generations and queue delivery
-remain future work. No RabbitMQ dependency is needed for one host.
