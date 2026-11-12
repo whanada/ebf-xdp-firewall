@@ -70,12 +70,12 @@ class Maps:
         now = time.monotonic_ns()
         for row in self.dump('flows'):
             key, val = raw(row['key']), raw(row['value'])
-            src, dst, sport, dport, outer, inner, vni, family, proto, direction, tagged = struct.unpack('<16s16sHHHHIBBBB', key)
+            src, dst, sport, dport, outer, inner, vni, family, proto, direction, tagged, tsrc, tdst, ovouter, ovinner, ovtagged, tfamily = struct.unpack('<16s16sHHHHIBBBB16s16sHHBB2x', key)
             first, last, packets, size, flags, _ = struct.unpack('<QQQQII', val)
             if now - last > 120 * 1000000000:
                 continue
             n = 4 if family == 4 else 16
-            flows.append(dict(src=str(ipaddress.ip_address(src[:n])), dst=str(ipaddress.ip_address(dst[:n])), sport=sport, dport=dport, protocol=proto, direction='egress' if direction else 'ingress', vlan_outer=outer if tagged else None, vlan_inner=inner if tagged > 1 else None, vni=vni or None, packets=packets, bytes=size, age_seconds=(now-first)/1e9, idle_seconds=(now-last)/1e9, state='observed; TCP state not confirmed'))
+            flows.append(dict(src=str(ipaddress.ip_address(src[:n])), dst=str(ipaddress.ip_address(dst[:n])), sport=sport, dport=dport, protocol=proto, direction='egress' if direction else 'ingress', vlan_outer=outer if tagged else None, vlan_inner=inner if tagged > 1 else None, vni=vni if tfamily else None, tunnel_src=str(ipaddress.ip_address(tsrc[:4 if tfamily == 4 else 16])) if tfamily else None, tunnel_dst=str(ipaddress.ip_address(tdst[:4 if tfamily == 4 else 16])) if tfamily else None, overlay_outer=ovouter if ovtagged else None, overlay_inner=ovinner if ovtagged > 1 else None, tcp_flags_seen=flags, packets=packets, bytes=size, age_seconds=(now-first)/1e9, idle_seconds=(now-last)/1e9, state='observed; TCP state not confirmed'))
         return {'stats': stats, 'flows': flows[:2000], 'active_records': len(flows), 'flow_limit': 65536, 'flow_view_limit': 2000, 'vlan_metadata': 'packet bytes only; stripped tags unavailable', 'packet_counts': 'hook observations; egress GSO may differ from wire packets'}
 
 

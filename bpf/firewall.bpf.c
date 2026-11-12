@@ -21,6 +21,9 @@ struct flow_key {
     __u16 sport, dport, vlan_outer, vlan_inner;
     __u32 vni;
     __u8 family, protocol, direction, tagged;
+    __u8 tunnel_src[16], tunnel_dst[16];
+    __u16 overlay_outer, overlay_inner;
+    __u8 overlay_tagged, tunnel_family, reserved[2];
 };
 struct flow_value { __u64 first_ns, last_ns, packets, bytes; __u32 flags, pad; };
 #define MAP(name_, type_, key_, value_, max_) \
@@ -46,7 +49,7 @@ static __always_inline void account(__u32 reason, __u64 bytes) {
 }
 // Returns 0 parsed, 1 unsupported, -1 malformed. IPv4 fragments and IPv6
 // extension chains are deliberately unsupported in this first version.
-static __always_inline int parse(void *data, void *end, struct flow_key *k) {
+static __always_inline int parse_l2(void *data, void *end, struct flow_key *k, void **transport, void **limit) {
  struct ethhdr *eth = data;
  if ((void *)(eth + 1) > end) return -1;
  __be16 proto = eth->h_proto;
@@ -87,16 +90,48 @@ static __always_inline int parse(void *data, void *end, struct flow_key *k) {
   if ((void *)(udp + 1) > end || bpf_ntohs(udp->len) < 8 || p + bpf_ntohs(udp->len) > end) return -1;
   k->sport = bpf_ntohs(udp->source); k->dport = bpf_ntohs(udp->dest);
  } else if (k->protocol != IPPROTO_ICMP && k->protocol != IPPROTO_ICMPV6) return 1;
+ *transport = p; *limit = end;
  return 0;
 }
-static __always_inline void track(struct flow_key *k, __u64 bytes, __u64 now) {
+static __always_inline int parse(void *data, void *end, struct flow_key *k, __u32 *flags) {
+ void *l4 = 0, *limit = 0;
+ int ret = parse_l2(data, end, k, &l4, &limit);
+ if (ret) return ret;
+ if (k->protocol == IPPROTO_UDP && k->dport == 4789) {
+  struct udphdr *udp = l4;
+  if ((void *)(udp + 1) > end) return -1;
+  __u8 *vx = (void *)(udp + 1);
+  if ((void *)vx + 8 > limit || (void *)vx + 8 > end) return -1;
+  // Base RFC7348 VXLAN only; other formats have explicit unsupported policy.
+  if (vx[0] != 8 || vx[1] || vx[2] || vx[3] || vx[7]) return 1;
+  __u32 vni = ((__u32)vx[4] << 16) | ((__u32)vx[5] << 8) | vx[6];
+  struct flow_key inner = {};
+  void *inner_l4 = 0, *inner_limit = 0;
+  ret = parse_l2(vx + 8, (void *)udp + bpf_ntohs(udp->len), &inner, &inner_l4, &inner_limit);
+  if (ret) return ret;
+  __builtin_memcpy(k->tunnel_src, k->src, 16); __builtin_memcpy(k->tunnel_dst, k->dst, 16);
+  k->tunnel_family = k->family;
+  __builtin_memcpy(k->src, inner.src, 16); __builtin_memcpy(k->dst, inner.dst, 16);
+  k->family = inner.family; k->protocol = inner.protocol;
+  k->sport = inner.sport; k->dport = inner.dport; k->vni = vni;
+  k->overlay_outer = inner.vlan_outer; k->overlay_inner = inner.vlan_inner; k->overlay_tagged = inner.tagged;
+  l4 = inner_l4; limit = inner_limit;
+ }
+ if (k->protocol == IPPROTO_TCP) {
+  __u8 *tcp = l4;
+  if ((void *)tcp + 20 > end || (void *)tcp + 20 > limit) return -1;
+  *flags = tcp[13];
+ }
+ return 0;
+}
+static __always_inline void track(struct flow_key *k, __u64 bytes, __u64 now, __u32 flags) {
  struct flow_value *f = bpf_map_lookup_elem(&flows, k);
  if (f) {
   __sync_fetch_and_add(&f->packets, 1); __sync_fetch_and_add(&f->bytes, bytes);
   // Concurrent writers can race on time; userspace uses an idle-time margin.
-  f->last_ns = now;
+  f->last_ns = now; __sync_fetch_and_or(&f->flags, flags);
  } else {
-  struct flow_value v = { .first_ns = now, .last_ns = now, .packets = 1, .bytes = bytes };
+  struct flow_value v = { .first_ns = now, .last_ns = now, .packets = 1, .bytes = bytes, .flags = flags };
   if (bpf_map_update_elem(&flows, k, &v, BPF_NOEXIST)) account(3, bytes);
  }
 }
@@ -106,7 +141,8 @@ SEC("xdp") int ingress(struct xdp_md *ctx) {
  __u32 zero = 0;
  struct config *cfg = bpf_map_lookup_elem(&settings, &zero);
  struct flow_key k = {};
- int result = parse(data, end, &k);
+ __u32 flags = 0;
+ int result = parse(data, end, &k, &flags);
  if (result) {
   account(result < 0 ? 2 : 7, bytes);
   return result < 0 && cfg && cfg->enforce ? XDP_DROP : XDP_PASS;
@@ -121,12 +157,13 @@ SEC("xdp") int ingress(struct xdp_md *ctx) {
   account(1, bytes);
   if (cfg && cfg->enforce) return XDP_DROP;
  }
- track(&k, bytes, now); account(0, bytes); return XDP_PASS;
+ track(&k, bytes, now, flags); account(0, bytes); return XDP_PASS;
 }
 SEC("tc") int egress(struct __sk_buff *skb) {
  void *data = (void *)(long)skb->data, *end = (void *)(long)skb->data_end;
  struct flow_key k = { .direction = 1 };
- if (!parse(data, end, &k)) track(&k, skb->len, bpf_ktime_get_ns());
+ __u32 flags = 0;
+ if (!parse(data, end, &k, &flags)) track(&k, skb->len, bpf_ktime_get_ns(), flags);
  account(4, skb->len); return TC_ACT_OK;
 }
 char LICENSE[] SEC("license") = "GPL";
