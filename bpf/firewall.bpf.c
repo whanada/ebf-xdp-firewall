@@ -157,6 +157,24 @@ SEC("xdp") int ingress(struct xdp_md *ctx) {
   account(1, bytes);
   if (cfg && cfg->enforce) return XDP_DROP;
  }
+ if (cfg) {
+  struct budget *b = bpf_map_lookup_elem(&budgets, &zero);
+  if (b) {
+   __u64 second = now / 1000000000;
+   if (b->second != second) { b->second = second; b->udp = 0; b->syn = 0; }
+   __u32 reason = 0;
+   // Saturation prevents counter wrap during sustained floods.
+   if (k.protocol == IPPROTO_UDP && cfg->udp_pps_cpu) {
+    if (b->udp < 0xffffffff) b->udp++;
+    if (b->udp > cfg->udp_pps_cpu) reason = 5;
+   }
+   if (k.protocol == IPPROTO_TCP && (flags & 2) && !(flags & 16) && cfg->syn_pps_cpu) {
+    if (b->syn < 0xffffffff) b->syn++;
+    if (b->syn > cfg->syn_pps_cpu) reason = 6;
+   }
+   if (reason) { account(reason, bytes); if (cfg->enforce) return XDP_DROP; }
+  }
+ }
  track(&k, bytes, now, flags); account(0, bytes); return XDP_PASS;
 }
 SEC("tc") int egress(struct __sk_buff *skb) {
