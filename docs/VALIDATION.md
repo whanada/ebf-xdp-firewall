@@ -36,5 +36,6 @@ The detailed isolated test output is in LOCAL_TEST_RESULTS.txt.
   hardware, MTU/nonlinear/GSO behavior, and realistic throughput/CPU/latency tests.
 - Production hardening and features explicitly deferred in README.md.
 
-These are not passes. Main remains at the planning baseline. The source and Git
-history are packaged for further testing on the larger server.
+These are not passes. The project owner explicitly requested integration into
+main with these gaps documented. The development merge does not constitute a
+production release or successful completion of the outstanding acceptance gates.
