@@ -1,0 +1,18 @@
+services:
+  control:
+    image: xdp-firewall-control:local
+    restart: unless-stopped
+    env_file: /etc/xdp-firewall/control.env
+    group_add:
+      - "{{ firewall_group.gid }}"
+    ports:
+      - "{{ firewall_bind }}:{{ firewall_port }}:8080"
+    volumes:
+      - /var/lib/xdp-firewall/control:/state:Z
+      - /run/xdp-firewall:/run/xdp-firewall:ro,z
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true

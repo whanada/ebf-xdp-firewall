@@ -1,0 +1,12 @@
+---
+- name: Deploy single-host XDP firewall
+  hosts: firewall
+  become: true
+  vars:
+    firewall_root: /opt/xdp-firewall
+    firewall_mode: native
+    firewall_port: 8080
+    firewall_bind: 127.0.0.1
+    firewall_source: "{{ playbook_dir }}/../.."
+  roles:
+    - firewall

@@ -1,0 +1,15 @@
+[Unit]
+Description=XDP firewall management containers
+Requires=docker.service xdp-firewall.service
+After=docker.service xdp-firewall.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={{ firewall_root }}
+ExecStart=/usr/bin/docker-compose -f compose.yml up -d
+ExecStop=/usr/bin/docker-compose -f compose.yml down
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
