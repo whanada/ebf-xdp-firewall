@@ -2,32 +2,33 @@
 
 ## Git and integration
 
-Use the configured human Git identity, never Codex as author or co-author.
-Develop features on separate branches. Keep main unchanged until the complete
-integration has run successfully on this computer. An unavailable check is a
-blocker, not a pass. No remote repository or push is implied.
+Use the configured project owner Git identity for authorship and commits.
+Develop features on separate branches and integrate on integration. The project
+owner has explicitly requested merging the development MVP into main. Outstanding
+deployment and hardware checks remain production-release gates; unavailable
+checks are not passes. The remote repository is whanada/ebf-xdp-firewall.
 
 Branches, in dependency order:
 
-- codex/project-plan: architecture and acceptance criteria.
-- codex/dataplane: C XDP parser, IPv4/IPv6 CIDR policy, counters, expirations.
-- codex/flow-monitoring: TC egress, bounded bidirectional flow state, VLAN/QinQ,
+- feature/project-plan: architecture and acceptance criteria.
+- feature/dataplane: C XDP parser, IPv4/IPv6 CIDR policy, counters, expirations.
+- feature/flow-monitoring: TC egress, bounded bidirectional flow state, VLAN/QinQ,
   VXLAN inner/outer identities, optional local socket-state confirmation.
-- codex/control-plane: host agent, Go API, PostgreSQL, revisions and reconciliation.
-- codex/ui-reporting: rule management, flow views, counters and audit reports.
-- codex/flood-protection: bounded service budgets, observation mode, automatic bans.
-- codex/ansible-deployment: complete single-host deployment and recovery.
-- codex/integration: integrate all features and execute local acceptance checks.
+- feature/control-plane: host agent, Python API, SQLite, revisions and reconciliation.
+- feature/ui-reporting: rule management, flow views, counters and audit reports.
+- feature/flood-protection: bounded service budgets, observation mode, automatic bans.
+- feature/ansible-deployment: complete single-host deployment and recovery.
+- integration: integrate all features and execute local acceptance checks.
 
 Create implementation branches when work begins. Integrate into the integration
-branch first; merge into main only after all required checks pass.
+branch first; merge development work into main when directed by the project owner.
 
 ## Single-host deployment
 
 Provide an Ansible inventory, documented variables, roles, and a site playbook.
 Detect supported OS/package manager before changing the host. Install Docker
 Engine and Compose, build prerequisites, the agent and BPF artifacts, systemd
-units, and the containerized API/UI/PostgreSQL/Prometheus stack. Manage persistent
+units, and the containerized API/UI with SQLite and built-in counter history. Manage persistent
 volumes, health checks, service startup ordering, authentication secrets, backups,
 and policy restoration. Keep secrets out of Git; support Ansible Vault.
 
@@ -61,7 +62,7 @@ idempotence, and test restart/recovery and rollback. Validate native attachment 
 offload visibility on the selected NIC separately from virtual-interface tests.
 Measure PPS, latency, CPU/softirq, NIC loss, memory, and telemetry loss. Record
 commands, results, environment, limitations, and failed checks. Missing host
-permissions or tooling blocks corresponding checks and the final main merge.
+permissions or tooling blocks corresponding checks and production acceptance.
 
 ## Future recommendations
 
@@ -77,4 +78,5 @@ packet path independent of management-service availability throughout.
 The planning session found Docker on PATH but no clang, bpftool, or
 ansible-playbook on PATH. Kernel release: 7.2.10-200.fc44.x86_64.
 Network-interface enumeration failed with a netlink permission error inside the
-execution sandbox. NIC compatibility and privileged runtime checks remain untested.
+execution sandbox. Physical-NIC compatibility remains untested. Subsequent isolated privileged
+runtime results are recorded in VALIDATION.md.

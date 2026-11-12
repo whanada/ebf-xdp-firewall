@@ -1,0 +1,179 @@
+---
+- name: Validate deployment inputs
+  ansible.builtin.assert:
+    that:
+      - (ansible_distribution == 'Debian' and ansible_distribution_version is version('12', '>=')) or (ansible_distribution == 'Ubuntu' and ansible_distribution_version is version('24.04', '>=')) or (ansible_distribution == 'Fedora' and ansible_distribution_version is version('42', '>='))
+      - ansible_architecture == 'x86_64'
+      - ansible_kernel is version('6.1', '>=')
+      - firewall_interface is defined
+      - firewall_interface is match('^[a-zA-Z0-9_.:-]+$')
+      - firewall_mode in ['native', 'generic']
+      - firewall_api_token is defined
+      - firewall_api_token | length >= 32
+      - firewall_api_token is match('^[a-zA-Z0-9_-]+$')
+      - firewall_bind == '127.0.0.1'
+    fail_msg: "Set an explicit interface, native/generic mode and a >=32-character token in Ansible Vault. MVP UI is localhost-only."
+  no_log: true
+
+- name: Install Debian build and runtime dependencies
+  ansible.builtin.apt:
+    name: [clang, gcc, make, libbpf-dev, libelf-dev, zlib1g-dev, bpftool, iproute2, ethtool, python3, ca-certificates]
+    update_cache: true
+    state: present
+  when: ansible_os_family == 'Debian'
+
+- name: Install Fedora build and runtime dependencies
+  ansible.builtin.dnf:
+    name: [clang, gcc, make, libbpf-devel, elfutils-libelf-devel, zlib-devel, bpftool, iproute, ethtool, python3, ca-certificates]
+    state: present
+  when: ansible_distribution == 'Fedora'
+
+- name: Require validated package platform
+  ansible.builtin.assert:
+    that: ansible_os_family == 'Debian' or ansible_distribution == 'Fedora'
+    fail_msg: "This first playbook supports Debian/Ubuntu and Fedora package sets only."
+
+- name: Detect existing Docker installation
+  ansible.builtin.command: docker --version
+  register: firewall_docker
+  changed_when: false
+  failed_when: false
+
+- name: Install Docker on Debian when absent
+  ansible.builtin.apt:
+    name: [docker.io, docker-compose]
+    state: present
+  when: ansible_os_family == 'Debian' and firewall_docker.rc != 0
+
+- name: Install Docker on Fedora when absent
+  ansible.builtin.dnf:
+    name: [moby-engine, docker-compose]
+    state: present
+  when: ansible_distribution == 'Fedora' and firewall_docker.rc != 0
+
+- name: Detect Compose plugin
+  ansible.builtin.command: docker compose version
+  register: firewall_compose
+  changed_when: false
+  failed_when: false
+
+- name: Install standalone Compose when plugin is absent
+  ansible.builtin.package:
+    name: docker-compose
+    state: present
+  when: firewall_compose.rc != 0
+
+- name: Enable Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Create application group
+  ansible.builtin.group:
+    name: xdp-firewall
+    state: present
+  register: firewall_group
+
+- name: Create directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ firewall_root }}"
+    - /etc/xdp-firewall
+    - /var/lib/xdp-firewall
+
+- name: Create persistent container storage
+  ansible.builtin.file:
+    path: /var/lib/xdp-firewall/control
+    state: directory
+    owner: '10001'
+    group: '10001'
+    mode: '0700'
+
+- name: Copy application sources without Git history or secrets
+  ansible.builtin.copy:
+    src: "{{ firewall_source }}/{{ item }}"
+    dest: "{{ firewall_root }}/"
+    owner: root
+    group: root
+    mode: preserve
+  loop: [bpf, agent, control, ui, scripts, Makefile, Dockerfile]
+  register: firewall_sources
+
+- name: Check loader build artifact
+  ansible.builtin.stat:
+    path: "{{ firewall_root }}/build/loader"
+  register: firewall_binary
+
+- name: Compile host dataplane and loader
+  ansible.builtin.command:
+    cmd: make all
+    chdir: "{{ firewall_root }}"
+  when: firewall_sources.changed or not firewall_binary.stat.exists
+
+- name: Write container environment
+  ansible.builtin.copy:
+    dest: /etc/xdp-firewall/control.env
+    content: "API_TOKEN={{ firewall_api_token }}\nAGENT_SOCKET=/run/xdp-firewall/agent.sock\n"
+    mode: '0600'
+  no_log: true
+  register: firewall_environment
+
+- name: Render deployment configuration
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: '0644'
+  loop:
+    - {src: compose.yml.j2, dest: '{{ firewall_root }}/compose.yml'}
+    - {src: xdp-firewall.service.j2, dest: /etc/systemd/system/xdp-firewall.service}
+    - {src: xdp-firewall-control.service.j2, dest: /etc/systemd/system/xdp-firewall-control.service}
+  register: firewall_templates
+
+- name: Check control-plane image
+  ansible.builtin.command: docker image inspect xdp-firewall-control:local
+  register: firewall_image
+  changed_when: false
+  failed_when: false
+
+- name: Build control-plane image
+  ansible.builtin.command:
+    cmd: docker build -t xdp-firewall-control:local .
+    chdir: "{{ firewall_root }}"
+  when: firewall_sources.changed or firewall_image.rc != 0
+
+- name: Enable host agent and control plane
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    daemon_reload: true
+    enabled: true
+    state: "{{ 'restarted' if firewall_sources.changed or firewall_templates.changed or firewall_environment.changed else 'started' }}"
+  loop: [xdp-firewall, xdp-firewall-control]
+
+- name: Check local web health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ firewall_port }}/healthz"
+  register: firewall_health
+  until: firewall_health.status == 200
+  retries: 12
+  delay: 5
+
+- name: Confirm the agent applied desired policy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ firewall_port }}/api/state"
+    headers:
+      Authorization: "Bearer {{ firewall_api_token }}"
+  register: firewall_state
+  until:
+    - firewall_state.status == 200
+    - firewall_state.json.status.error == none
+    - firewall_state.json.status.applied == firewall_state.json.revision
+    - firewall_state.json.telemetry.error is not defined
+  retries: 12
+  delay: 5
+  no_log: true

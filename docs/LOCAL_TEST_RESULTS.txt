@@ -1,0 +1,44 @@
+mkdir -p build
+clang -O2 -g -Wall -Wextra -target bpf -mcpu=v3 -I/usr/include/x86_64-linux-gnu -c bpf/firewall.bpf.c -o build/firewall.bpf.o
+cc -O2 -g -Wall -Wextra bpf/loader.c -lbpf -lelf -lz -o build/loader
+test_invalid_policy_has_no_partial_mutation (test_agent.AgentTests.test_invalid_policy_has_no_partial_mutation) ... ok
+test_reconcile_expiry_and_removal (test_agent.AgentTests.test_reconcile_expiry_and_removal) ... ok
+test_fragment_still_obeys_source_block (test_bpf.BPFTests.test_fragment_still_obeys_source_block) ... ok
+test_ipv4_ipv6_cidr (test_bpf.BPFTests.test_ipv4_ipv6_cidr) ... ok
+test_ipv6_extension_still_obeys_source_block (test_bpf.BPFTests.test_ipv6_extension_still_obeys_source_block) ... ok
+test_malformed_and_unsupported (test_bpf.BPFTests.test_malformed_and_unsupported) ... ok
+test_observe_and_expiry (test_bpf.BPFTests.test_observe_and_expiry) ... ok
+test_tc_egress (test_bpf.BPFTests.test_tc_egress) ... ok
+test_udp_and_syn_budgets (test_bpf.BPFTests.test_udp_and_syn_budgets) ... ok
+test_vlan_qinq_and_flow_decode (test_bpf.BPFTests.test_vlan_qinq_and_flow_decode) ... ok
+test_vxlan_inner_policy_and_identity (test_bpf.BPFTests.test_vxlan_inner_policy_and_identity) ... ok
+test_bidirectional_tenant_isolation (test_connections.ConnectionTests.test_bidirectional_tenant_isolation) ... ok
+test_socket_table (test_connections.ConnectionTests.test_socket_table) ... ok
+test_agent_failure_keeps_policy_pending (test_control.ControlTests.test_agent_failure_keeps_policy_pending) ... ok
+test_authentication_and_health (test_control.ControlTests.test_authentication_and_health) ... ok
+test_invalid_config_duplicate_and_csv (test_control.ControlTests.test_invalid_config_duplicate_and_csv) ... ok
+test_invalid_input_does_not_modify_revision (test_control.ControlTests.test_invalid_input_does_not_modify_revision) ... ok
+test_range_and_overlap_rejection (test_control.ControlTests.test_range_and_overlap_rejection) ... ok
+test_rule_revision_application_delete_and_audit (test_control.ControlTests.test_rule_revision_application_delete_and_audit) ... ok
+
+----------------------------------------------------------------------
+Ran 19 tests in 3.568s
+
+OK
+
+playbook: deploy/ansible/site.yml
+
+PLAY [Render deployment artifacts without changing the host] *******************
+
+TASK [Render templates] ********************************************************
+changed: [localhost] => (item={'src': 'compose.yml.j2', 'dest': 'firewall-compose.yml'})
+changed: [localhost] => (item={'src': 'xdp-firewall.service.j2', 'dest': 'xdp-firewall.service'})
+changed: [localhost] => (item={'src': 'xdp-firewall-control.service.j2', 'dest': 'xdp-firewall-control.service'})
+
+PLAY RECAP *********************************************************************
+localhost                  : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+PASS: live veth packet passes in observation mode and drops under CIDR enforcement
+PASS: generic veth attachment, replacement refusal and clean detach
+PASS: live veth packet passes in observation mode and drops under CIDR enforcement
+PASS: native veth attachment, replacement refusal and clean detach

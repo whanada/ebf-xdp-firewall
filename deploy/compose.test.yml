@@ -1,0 +1,27 @@
+services:
+  agent:
+    image: xdp-firewall-test:latest
+    privileged: true
+    user: '0:10001'
+    network_mode: none
+    command: [sh, /src/scripts/test-agent-container.sh]
+    volumes:
+      - agent-socket:/run/xdp-firewall
+    healthcheck:
+      test: [CMD, test, -S, /run/xdp-firewall/agent.sock]
+      interval: 2s
+      retries: 15
+  control:
+    image: xdp-firewall-control:test
+    network_mode: none
+    environment:
+      API_TOKEN: integration-test-token-only-not-for-deployment
+    volumes:
+      - agent-socket:/run/xdp-firewall:ro
+      - control-state:/state
+    depends_on:
+      agent:
+        condition: service_healthy
+volumes:
+  agent-socket:
+  control-state:

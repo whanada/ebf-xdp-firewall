@@ -1,0 +1,23 @@
+---
+- name: Render deployment artifacts without changing the host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    firewall_root: /opt/xdp-firewall
+    firewall_interface: test0
+    firewall_mode: generic
+    firewall_bind: 127.0.0.1
+    firewall_port: 8080
+    firewall_group:
+      gid: 10001
+  tasks:
+    - name: Render templates
+      ansible.builtin.template:
+        src: "../deploy/ansible/roles/firewall/templates/{{ item.src }}"
+        dest: "/tmp/{{ item.dest }}"
+        mode: '0644'
+      loop:
+        - {src: compose.yml.j2, dest: firewall-compose.yml}
+        - {src: xdp-firewall.service.j2, dest: xdp-firewall.service}
+        - {src: xdp-firewall-control.service.j2, dest: xdp-firewall-control.service}

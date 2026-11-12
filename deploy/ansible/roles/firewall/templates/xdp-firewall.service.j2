@@ -1,0 +1,21 @@
+[Unit]
+Description=XDP firewall dataplane and local agent
+After=network.target
+Before=xdp-firewall-control.service
+
+[Service]
+Type=simple
+Environment=PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=xdp-firewall
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+Group=xdp-firewall
+ExecStart=/usr/bin/python3 {{ firewall_root }}/scripts/run_host.py --root {{ firewall_root }} --interface {{ firewall_interface }} --mode {{ firewall_mode }}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitMEMLOCK=infinity
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target
