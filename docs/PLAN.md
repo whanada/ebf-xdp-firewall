@@ -2,22 +2,22 @@
 
 ## Git and integration
 
-Use the configured human Git identity, never Codex as author or co-author.
+Use the configured project owner Git identity for authorship and commits.
 Develop features on separate branches. Keep main unchanged until the complete
 integration has run successfully on this computer. An unavailable check is a
 blocker, not a pass. No remote repository or push is implied.
 
 Branches, in dependency order:
 
-- codex/project-plan: architecture and acceptance criteria.
-- codex/dataplane: C XDP parser, IPv4/IPv6 CIDR policy, counters, expirations.
-- codex/flow-monitoring: TC egress, bounded bidirectional flow state, VLAN/QinQ,
+- feature/project-plan: architecture and acceptance criteria.
+- feature/dataplane: C XDP parser, IPv4/IPv6 CIDR policy, counters, expirations.
+- feature/flow-monitoring: TC egress, bounded bidirectional flow state, VLAN/QinQ,
   VXLAN inner/outer identities, optional local socket-state confirmation.
-- codex/control-plane: host agent, Go API, PostgreSQL, revisions and reconciliation.
-- codex/ui-reporting: rule management, flow views, counters and audit reports.
-- codex/flood-protection: bounded service budgets, observation mode, automatic bans.
-- codex/ansible-deployment: complete single-host deployment and recovery.
-- codex/integration: integrate all features and execute local acceptance checks.
+- feature/control-plane: host agent, Go API, PostgreSQL, revisions and reconciliation.
+- feature/ui-reporting: rule management, flow views, counters and audit reports.
+- feature/flood-protection: bounded service budgets, observation mode, automatic bans.
+- feature/ansible-deployment: complete single-host deployment and recovery.
+- integration: integrate all features and execute local acceptance checks.
 
 Create implementation branches when work begins. Integrate into the integration
 branch first; merge into main only after all required checks pass.
