@@ -54,6 +54,7 @@ def initialize():
         CREATE TABLE IF NOT EXISTS meta(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, applied INTEGER NOT NULL, config TEXT NOT NULL, error TEXT);
         INSERT OR IGNORE INTO meta VALUES(1,0,-1,'{"enforce":false,"udp_pps_cpu":0,"syn_pps_cpu":0}',NULL);
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, ts REAL, action TEXT, details TEXT);
+        CREATE TABLE IF NOT EXISTS samples(ts REAL PRIMARY KEY, counters TEXT NOT NULL);
         ''')
 
 
@@ -67,6 +68,9 @@ def reconcile_once():
         p = policy(db)
         try:
             agent('POST', p)
+            snapshot = agent()
+            db.execute('INSERT INTO samples VALUES(?,?)', (time.time(), json.dumps(snapshot.get('stats', {}))))
+            db.execute('DELETE FROM samples WHERE ts<?', (time.time()-86400,))
             db.execute('UPDATE meta SET applied=?,error=NULL WHERE id=1', (p['revision'],))
         except Exception as exc:
             db.execute('UPDATE meta SET error=? WHERE id=1', (str(exc),))
@@ -79,8 +83,15 @@ def reconcile_loop():
 
 
 def validate_rule(body):
-    net = ipaddress.ip_network(str(body['cidr']), strict=False)
-    if net.prefixlen == 0:
+    source = str(body['cidr']).strip()
+    if '-' in source:
+        first, last = [ipaddress.ip_address(v.strip()) for v in source.split('-', 1)]
+        networks = list(ipaddress.summarize_address_range(first, last))
+    else:
+        networks = [ipaddress.ip_network(source, strict=False)]
+    if len(networks) > 256:
+        raise ValueError('range expands beyond 256 CIDRs')
+    if any(net.prefixlen == 0 for net in networks):
         raise ValueError('default-route blocks are disabled to protect management access')
     reason = str(body.get('reason', 'manual')).strip()
     if not 1 <= len(reason) <= 240:
@@ -88,7 +99,7 @@ def validate_rule(body):
     ttl = body.get('ttl_seconds', 0)
     if type(ttl) is not int or not 0 <= ttl <= 31536000:
         raise ValueError('TTL must be integer seconds between 0 and 31536000')
-    return str(net), reason, time.time() + ttl if ttl else None
+    return [str(net) for net in networks], reason, time.time() + ttl if ttl else None
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -111,7 +122,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def authorized(self):
         expected = 'Bearer ' + os.environ['API_TOKEN']
-        if not hmac.compare_digest(self.headers.get('Authorization', ''), expected):
+        if not hmac.compare_digest(self.headers.get('Authorization', '').encode(), expected.encode()):
             self.send(401, {'error': 'authentication required'})
             return False
         return True
@@ -129,6 +140,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with LOCK, connect() as db:
                 p = policy(db)
                 p['status'] = dict(db.execute('SELECT applied,error FROM meta').fetchone())
+                p['history'] = [dict(r) for r in db.execute('SELECT * FROM samples ORDER BY ts DESC LIMIT 120')]
                 p['audit'] = [dict(r) for r in db.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 100')]
             try:
                 p['telemetry'] = agent()
@@ -160,13 +172,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not 0 <= length <= 16384:
                 raise ValueError('invalid request size')
             body = json.loads(self.rfile.read(length)) if length else {}
+            if not isinstance(body, dict):
+                raise ValueError('request must be a JSON object')
             with LOCK, connect() as db:
                 if self.command == 'POST' and self.path == '/api/rules':
-                    cidr, reason, expiry = validate_rule(body)
+                    cidrs, reason, expiry = validate_rule(body)
                     seq = db.execute("SELECT seq FROM sqlite_sequence WHERE name='rules'").fetchone()
-                    if seq and seq[0] >= 4095:
+                    if (seq[0] if seq else 0) + len(cidrs) >= 4096:
                         raise ValueError('rule ID capacity reached; migration required')
-                    db.execute('INSERT INTO rules(cidr,reason,expires_at) VALUES(?,?,?)', (cidr, reason, expiry))
+                    existing_networks = [ipaddress.ip_network(r['cidr']) for r in db.execute('SELECT cidr FROM rules WHERE expires_at IS NULL OR expires_at>?', (time.time(),))]
+                    for cidr in cidrs:
+                        net = ipaddress.ip_network(cidr)
+                        if any(net.version == other.version and net.overlaps(other) for other in existing_networks):
+                            raise ValueError('overlapping active CIDRs are not supported in this release')
+                    for cidr in cidrs:
+                        db.execute('INSERT INTO rules(cidr,reason,expires_at) VALUES(?,?,?)', (cidr, reason, expiry))
                 elif self.command == 'DELETE' and self.path.startswith('/api/rules/'):
                     ident = int(self.path.rsplit('/', 1)[1])
                     if db.execute('DELETE FROM rules WHERE id=?', (ident,)).rowcount != 1:
@@ -187,7 +207,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 db.execute('INSERT INTO audit(ts,action,details) VALUES(?,?,?)', (time.time(), self.command + ' ' + self.path, json.dumps(body)))
             # Async delivery: response never claims the rule is already in the kernel.
             self.send(202, {'status': 'pending'})
-        except (ValueError, KeyError, sqlite3.IntegrityError) as exc:
+        except (ValueError, TypeError, KeyError, sqlite3.IntegrityError) as exc:
             self.send(400, {'error': str(exc)})
 
 

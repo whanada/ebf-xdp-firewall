@@ -8,6 +8,7 @@ Type=simple
 Environment=PYTHONDONTWRITEBYTECODE=1
 RuntimeDirectory=xdp-firewall
 RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 Group=xdp-firewall
 ExecStart=/usr/bin/python3 {{ firewall_root }}/scripts/run_host.py --root {{ firewall_root }} --interface {{ firewall_interface }} --mode {{ firewall_mode }}
 Restart=on-failure

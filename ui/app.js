@@ -28,7 +28,7 @@ async function refresh() {
       $('enforce').checked = state.config.enforce; $('udp').value = state.config.udp_pps_cpu; $('syn').value = state.config.syn_pps_cpu;
     }
     $('cards').replaceChildren();
-    for (const [name, value] of [['Ingress passed',state.telemetry.stats?.['0']?.packets ?? '—'],['Block candidates',state.telemetry.stats?.['1']?.packets ?? '—'],['Egress observed',state.telemetry.stats?.['4']?.packets ?? '—'],['Active flow records',state.telemetry.active_records ?? '—']]) {
+    for (const [name, value] of [['Ingress passed',state.telemetry.stats?.['0']?.packets ?? '—'],['Actually dropped',state.telemetry.stats?.['8']?.packets ?? '—'],['Egress observed',state.telemetry.stats?.['4']?.packets ?? '—'],['Active flow records',state.telemetry.active_records ?? '—']]) {
       const box = document.createElement('div'); const label = document.createElement('span'); label.textContent = name; const number = document.createElement('strong'); number.textContent = value; box.append(label, number); $('cards').append(box);
     }
     $('rules').replaceChildren();
@@ -38,6 +38,23 @@ async function refresh() {
     }
     $('audit').replaceChildren();
     for (const entry of state.audit) { const p = document.createElement('p'); p.textContent = `${new Date(entry.ts * 1000).toLocaleString()} · ${entry.action} · ${entry.details}`; $('audit').append(p); }
+    for (const id of ['connections','sockets','history']) $(id).replaceChildren();
+    for (const c of state.telemetry.connections || []) {
+      const row = document.createElement('tr');
+      for (const value of [c.endpoint_a.join(':'),c.endpoint_b.join(':'),c.protocol,`${c.vlan_outer ?? 'none/unknown'} / ${c.vni ?? '—'}`,c.state,c.bytes]) cell(row,value);
+      $('connections').append(row);
+    }
+    for (const c of state.telemetry.local_sockets || []) {
+      const row = document.createElement('tr');
+      for (const value of [`${c.src}:${c.sport}`,`${c.dst}:${c.dport}`,c.state]) cell(row,value);
+      $('sockets').append(row);
+    }
+    for (const sample of (state.history || []).slice(0,12)) {
+      const counts = JSON.parse(sample.counters); const row = document.createElement('tr');
+      cell(row,new Date(sample.ts * 1000).toLocaleTimeString());
+      for (const id of ['0','1','5','6']) cell(row,counts[id]?.packets ?? 0);
+      $('history').append(row);
+    }
     flows();
   } catch (e) { $('error').textContent = e.message; }
 }

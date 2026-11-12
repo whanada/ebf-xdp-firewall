@@ -1,0 +1,6 @@
+.git
+build
+state
+.env
+**/__pycache__
+*.log

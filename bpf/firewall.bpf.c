@@ -36,8 +36,8 @@ struct { __uint(type, BPF_MAP_TYPE_LPM_TRIE); __uint(max_entries, 16384);
 } block6 SEC(".maps");
 MAP(settings, BPF_MAP_TYPE_ARRAY, __u32, struct config, 1);
 // 0 ingress pass, 1 block candidate, 2 malformed, 3 flow insert failure,
-// 4 egress, 5 UDP budget candidate, 6 SYN budget candidate, 7 unsupported.
-MAP(stats, BPF_MAP_TYPE_PERCPU_ARRAY, __u32, struct count, 8);
+// 4 egress, 5 UDP budget candidate, 6 SYN budget candidate, 7 unsupported, 8 actual drops.
+MAP(stats, BPF_MAP_TYPE_PERCPU_ARRAY, __u32, struct count, 9);
 MAP(rule_stats, BPF_MAP_TYPE_PERCPU_ARRAY, __u32, struct count, 4096);
 MAP(flows, BPF_MAP_TYPE_LRU_HASH, struct flow_key, struct flow_value, 65536);
 struct budget { __u64 second; __u32 udp, syn; };
@@ -49,16 +49,16 @@ static __always_inline void account(__u32 reason, __u64 bytes) {
 }
 // Returns 0 parsed, 1 unsupported, -1 malformed. IPv4 fragments and IPv6
 // extension chains are deliberately unsupported in this first version.
-static __always_inline int parse_l2(void *data, void *end, struct flow_key *k, void **transport, void **limit) {
+static __always_inline int parse_l2(void *data, void *physical, void *end, struct flow_key *k, void **transport, void **limit) {
  struct ethhdr *eth = data;
- if ((void *)(eth + 1) > end) return -1;
+ if ((void *)(eth + 1) > physical || (void *)(eth + 1) > end) return -1;
  __be16 proto = eth->h_proto;
  void *p = eth + 1;
  #pragma unroll
  for (int i = 0; i < 2; i++) {
   if (proto == bpf_htons(ETH_P_8021Q) || proto == bpf_htons(ETH_P_8021AD)) {
    struct vlan *v = p;
-   if ((void *)(v + 1) > end) return -1;
+   if ((void *)(v + 1) > physical || (void *)(v + 1) > end) return -1;
    if (i == 0) k->vlan_outer = bpf_ntohs(v->tci) & 4095;
    else k->vlan_inner = bpf_ntohs(v->tci) & 4095;
    k->tagged++; proto = v->proto; p = v + 1;
@@ -66,16 +66,16 @@ static __always_inline int parse_l2(void *data, void *end, struct flow_key *k, v
  }
  if (proto == bpf_htons(ETH_P_IP)) {
   struct iphdr *ip = p;
-  if ((void *)(ip + 1) > end || ip->version != 4 || ip->ihl < 5) return -1;
+  if ((void *)(ip + 1) > physical || (void *)(ip + 1) > end || ip->version != 4 || ip->ihl < 5) return -1;
   __u32 len = ip->ihl * 4;
   if (p + len > end || bpf_ntohs(ip->tot_len) < len || p + bpf_ntohs(ip->tot_len) > end) return -1;
-  if (ip->frag_off & bpf_htons(0x3fff)) return 1;
   k->family = 4; k->protocol = ip->protocol;
   __builtin_memcpy(k->src, &ip->saddr, 4); __builtin_memcpy(k->dst, &ip->daddr, 4);
+  if (ip->frag_off & bpf_htons(0x3fff)) return 1;
   end = p + bpf_ntohs(ip->tot_len); p += len;
  } else if (proto == bpf_htons(ETH_P_IPV6)) {
   struct ipv6hdr *ip = p;
-  if ((void *)(ip + 1) > end || ip->version != 6) return -1;
+  if ((void *)(ip + 1) > physical || (void *)(ip + 1) > end || ip->version != 6) return -1;
   if ((void *)(ip + 1) + bpf_ntohs(ip->payload_len) > end) return -1;
   k->family = 6; k->protocol = ip->nexthdr;
   __builtin_memcpy(k->src, &ip->saddr, 16); __builtin_memcpy(k->dst, &ip->daddr, 16);
@@ -83,11 +83,11 @@ static __always_inline int parse_l2(void *data, void *end, struct flow_key *k, v
  } else return 1;
  if (k->protocol == IPPROTO_TCP) {
   struct tcphdr *tcp = p;
-  if ((void *)(tcp + 1) > end || tcp->doff < 5 || p + tcp->doff * 4 > end) return -1;
+  if ((void *)(tcp + 1) > physical || (void *)(tcp + 1) > end || tcp->doff < 5 || p + tcp->doff * 4 > end) return -1;
   k->sport = bpf_ntohs(tcp->source); k->dport = bpf_ntohs(tcp->dest);
  } else if (k->protocol == IPPROTO_UDP) {
   struct udphdr *udp = p;
-  if ((void *)(udp + 1) > end || bpf_ntohs(udp->len) < 8 || p + bpf_ntohs(udp->len) > end) return -1;
+  if ((void *)(udp + 1) > physical || (void *)(udp + 1) > end || bpf_ntohs(udp->len) < 8 || p + bpf_ntohs(udp->len) > end) return -1;
   k->sport = bpf_ntohs(udp->source); k->dport = bpf_ntohs(udp->dest);
  } else if (k->protocol != IPPROTO_ICMP && k->protocol != IPPROTO_ICMPV6) return 1;
  *transport = p; *limit = end;
@@ -95,7 +95,7 @@ static __always_inline int parse_l2(void *data, void *end, struct flow_key *k, v
 }
 static __always_inline int parse(void *data, void *end, struct flow_key *k, __u32 *flags) {
  void *l4 = 0, *limit = 0;
- int ret = parse_l2(data, end, k, &l4, &limit);
+ int ret = parse_l2(data, end, end, k, &l4, &limit);
  if (ret) return ret;
  if (k->protocol == IPPROTO_UDP && k->dport == 4789) {
   struct udphdr *udp = l4;
@@ -107,8 +107,8 @@ static __always_inline int parse(void *data, void *end, struct flow_key *k, __u3
   __u32 vni = ((__u32)vx[4] << 16) | ((__u32)vx[5] << 8) | vx[6];
   struct flow_key inner = {};
   void *inner_l4 = 0, *inner_limit = 0;
-  ret = parse_l2(vx + 8, (void *)udp + bpf_ntohs(udp->len), &inner, &inner_l4, &inner_limit);
-  if (ret) return ret;
+  ret = parse_l2(vx + 8, end, (void *)udp + bpf_ntohs(udp->len), &inner, &inner_l4, &inner_limit);
+  if (ret < 0 || (ret && !inner.family)) return ret;
   __builtin_memcpy(k->tunnel_src, k->src, 16); __builtin_memcpy(k->tunnel_dst, k->dst, 16);
   k->tunnel_family = k->family;
   __builtin_memcpy(k->src, inner.src, 16); __builtin_memcpy(k->dst, inner.dst, 16);
@@ -116,6 +116,7 @@ static __always_inline int parse(void *data, void *end, struct flow_key *k, __u3
   k->sport = inner.sport; k->dport = inner.dport; k->vni = vni;
   k->overlay_outer = inner.vlan_outer; k->overlay_inner = inner.vlan_inner; k->overlay_tagged = inner.tagged;
   l4 = inner_l4; limit = inner_limit;
+  if (ret) return ret;
  }
  if (k->protocol == IPPROTO_TCP) {
   __u8 *tcp = l4;
@@ -143,10 +144,12 @@ SEC("xdp") int ingress(struct xdp_md *ctx) {
  struct flow_key k = {};
  __u32 flags = 0;
  int result = parse(data, end, &k, &flags);
- if (result) {
-  account(result < 0 ? 2 : 7, bytes);
-  return result < 0 && cfg && cfg->enforce ? XDP_DROP : XDP_PASS;
+ if (result < 0) {
+  account(2, bytes);
+  if (cfg && cfg->enforce) { account(8, bytes); return XDP_DROP; }
+  account(0, bytes); return XDP_PASS;
  }
+ if (result) { account(7, bytes); if (!k.family) { account(0, bytes); return XDP_PASS; } }
  struct rule *r = 0;
  if (k.family == 4) { struct key4 key = { .prefix = 32 }; __builtin_memcpy(key.addr, k.src, 4); r = bpf_map_lookup_elem(&block4, &key); }
  else { struct key6 key = { .prefix = 128 }; __builtin_memcpy(key.addr, k.src, 16); r = bpf_map_lookup_elem(&block6, &key); }
@@ -155,8 +158,9 @@ SEC("xdp") int ingress(struct xdp_md *ctx) {
   struct count *c = bpf_map_lookup_elem(&rule_stats, &id);
   if (c) { c->packets++; c->bytes += bytes; }
   account(1, bytes);
-  if (cfg && cfg->enforce) return XDP_DROP;
+  if (cfg && cfg->enforce) { account(8, bytes); return XDP_DROP; }
  }
+ if (result) { account(0, bytes); return XDP_PASS; } // IP policy was checked; no L4 classification.
  if (cfg) {
   struct budget *b = bpf_map_lookup_elem(&budgets, &zero);
   if (b) {
@@ -172,7 +176,7 @@ SEC("xdp") int ingress(struct xdp_md *ctx) {
     if (b->syn < 0xffffffff) b->syn++;
     if (b->syn > cfg->syn_pps_cpu) reason = 6;
    }
-   if (reason) { account(reason, bytes); if (cfg->enforce) return XDP_DROP; }
+   if (reason) { account(reason, bytes); if (cfg->enforce) { account(8, bytes); return XDP_DROP; } }
   }
  }
  track(&k, bytes, now, flags); account(0, bytes); return XDP_PASS;

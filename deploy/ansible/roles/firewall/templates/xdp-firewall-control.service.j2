@@ -7,8 +7,8 @@ After=docker.service xdp-firewall.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory={{ firewall_root }}
-ExecStart=/usr/bin/docker-compose -f compose.yml up -d
-ExecStop=/usr/bin/docker-compose -f compose.yml down
+ExecStart=/usr/bin/python3 {{ firewall_root }}/scripts/compose.py up -d
+ExecStop=/usr/bin/python3 {{ firewall_root }}/scripts/compose.py down
 TimeoutStartSec=180
 
 [Install]
